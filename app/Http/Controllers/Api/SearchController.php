@@ -83,6 +83,10 @@ class SearchController extends Controller
             }
         }
 
+        if ($request->filled('creator_id') && $request->creator_id !== 'all') {
+            $query->where('author_id', $request->creator_id);
+        }
+
         // Filtro: Período (Preparado para expansão futura do frontend)
         if ($request->filled('start_date')) {
             $query->whereDate('created_at', '>=', $request->start_date);
