@@ -277,15 +277,20 @@ class InvitationController extends Controller
 
         DB::transaction(function () use ($usersData, $sender, $search, $initialStatus, $nativeColumns, $customMessage, &$newCount, &$existingCount) {
 
-            foreach ($usersData as $rowData) {
+            // 🌟 CORREÇÃO 1: Limpa duplicatas exatas dentro da própria requisição/planilha
+            $uniqueUsers = collect($usersData)->unique(function ($item) {
+                return trim(strtolower($item['email'] ?? ''));
+            })->filter(function ($item) {
+                return !empty($item['email']);
+            })->all();
+
+            foreach ($uniqueUsers as $rowData) {
                 $rowData = array_change_key_case($rowData, CASE_LOWER);
-
-                if (empty($rowData['email'])) {
-                    continue;
-                }
-
                 $email = trim(strtolower($rowData['email']));
-                $responder = Responder::where('email', $email)->first();
+
+                // 🌟 CORREÇÃO 2: withoutGlobalScopes() garante que o Laravel ache o usuário 
+                // mesmo se ele estiver em uma lixeira (SoftDeletes) ou oculto por algum Global Scope.
+                $responder = Responder::withoutGlobalScopes()->where('email', $email)->first();
 
                 $metadata = [];
                 foreach ($rowData as $key => $value) {
@@ -296,17 +301,26 @@ class InvitationController extends Controller
 
                 if ($responder) {
                     // --- USUÁRIO JÁ EXISTE ---
+
+                    // 🌟 Se o sistema usa SoftDeletes e o usuário estava deletado, nós o restauramos
+                    if (method_exists($responder, 'trashed') && $responder->trashed()) {
+                        $responder->restore();
+                        $responder->active = true;
+                    }
+
                     $updatedMetadata = array_merge($responder->metadata ?? [], $metadata);
                     $responder->update([
-                        'metadata' => !empty($updatedMetadata) ? $updatedMetadata : null
+                        'metadata' => !empty($updatedMetadata) ? $updatedMetadata : null,
+                        'name' => trim($rowData['name'] ?? $responder->name),
+                        'phone' => $rowData['phone'] ?? $responder->phone ?? null,
                     ]);
 
                     SearchInvitation::updateOrCreate(
                         ['search_id' => $search->id, 'email' => $email],
                         [
                             'sender_id' => $sender->id,
-                            'name' => trim($rowData['name'] ?? $responder->name),
-                            'phone' => $rowData['phone'] ?? $responder->phone ?? null,
+                            'name' => $responder->name,
+                            'phone' => $responder->phone,
                             'status' => $initialStatus,
                             'delivery_status' => 'standby',
                             'responder_id' => $responder->id
@@ -329,7 +343,6 @@ class InvitationController extends Controller
                 } else {
                     // --- USUÁRIO NÃO EXISTE (Novo Onboarding com Senha) ---
 
-                    // 🌟 1. Gera a senha plana para enviar por e-mail
                     $plainPassword = Str::random(10);
 
                     $newResponder = Responder::create([
@@ -339,7 +352,7 @@ class InvitationController extends Controller
                         'crm' => $rowData['crm'] ?? null,
                         'crm_state' => $rowData['crm_state'] ?? null,
                         'active' => true,
-                        'password' => Hash::make($plainPassword), // Salva o Hash no banco
+                        'password' => Hash::make($plainPassword),
                         'inviter_id' => $sender->id,
                         'metadata' => !empty($metadata) ? $metadata : null
                     ]);
@@ -356,7 +369,7 @@ class InvitationController extends Controller
                     ]);
 
                     SystemInvitation::updateOrCreate(
-                        ['email' => $email], // Condição de busca (evita o erro 1062)
+                        ['email' => $email],
                         [
                             'sender_id' => $sender->id,
                             'name' => $newResponder->name,
@@ -368,7 +381,6 @@ class InvitationController extends Controller
 
                     $newCount++;
 
-                    // 🌟 2. Puxa a URL Base do .env e monta a mensagem com credenciais
                     $loginUrl = env('FRONTEND_URL', env('APP_URL', 'https://amb-pesquisas.org.br')) . '/login';
 
                     if ($search->status === 'published') {
@@ -377,7 +389,6 @@ class InvitationController extends Controller
                         $baseMsg = $customMessage ?? "Você está sendo convidado por {$sender->name} para participar da plataforma AMB-Pesquisas.";
                     }
 
-                    // Concatena as credenciais geradas na mensagem enviada ao Mailable
                     $msgWithCredentials = $baseMsg . "\n\nPara acessar o sistema, utilize seus dados abaixo:\n\nE-mail de acesso: {$email}\nSenha Provisória: {$plainPassword}\n\n*Recomendamos alterar sua senha no menu Perfil logo após o seu primeiro acesso.";
 
                     try {
@@ -791,7 +802,7 @@ class InvitationController extends Controller
                 if (!$hasOtherInvitations && !$hasAnswers) {
                     // Limpa também eventuais convites de sistema que estivessem aguardando
                     DB::table('system_invitations')->where('email', $responder->email)->delete();
-                    
+
                     // Inativa e aplica o Soft Delete
                     $responder->update(['active' => 0]);
                     $responder->delete();
@@ -853,7 +864,7 @@ class InvitationController extends Controller
     public function getEligibleUsers(Request $request, $id): JsonResponse
     {
         $search = Search::with('specialties')->findOrFail($id);
-        
+
         $invitedEmails = $search->invitations()->pluck('email')->toArray();
         $query = Responder::where('active', 1);
 
@@ -873,10 +884,10 @@ class InvitationController extends Controller
         // 1. Busca por Texto (Nome, Email ou CRM)
         if ($request->filled('search')) {
             $searchTerm = $request->search;
-            $query->where(function($q) use ($searchTerm) {
+            $query->where(function ($q) use ($searchTerm) {
                 $q->where('name', 'like', "%{$searchTerm}%")
-                  ->orWhere('email', 'like', "%{$searchTerm}%")
-                  ->orWhere('crm', 'like', "%{$searchTerm}%");
+                    ->orWhere('email', 'like', "%{$searchTerm}%")
+                    ->orWhere('crm', 'like', "%{$searchTerm}%");
             });
         }
 
@@ -910,7 +921,7 @@ class InvitationController extends Controller
                     $q->orWhere(function ($subQ) use ($pastSearchId) {
                         // 🌟 CORREÇÃO: Usando 'answers'
                         $subQ->whereHas('searchInvitations', fn($sq) => $sq->where('search_id', $pastSearchId))
-                             ->whereDoesntHave('answers', fn($sq) => $sq->where('search_id', $pastSearchId));
+                            ->whereDoesntHave('answers', fn($sq) => $sq->where('search_id', $pastSearchId));
                     });
                 }
             });
@@ -941,12 +952,12 @@ class InvitationController extends Controller
         if ($search->specialties->count() > 0) {
             $query->whereHas('specialties', fn($q) => $q->whereIn('specialties.id', $search->specialties->pluck('id')->toArray()));
         }
-        
+
         if ($request->filled('search')) {
             $query->where(fn($q) => $q->where('name', 'like', "%{$request->search}%")
-                                      ->orWhere('email', 'like', "%{$request->search}%"));
+                ->orWhere('email', 'like', "%{$request->search}%"));
         }
-        
+
         if ($request->filled('specialty') && $request->specialty !== 'all') {
             if ($request->specialty === 'none') {
                 $query->doesntHave('specialties');
@@ -967,7 +978,7 @@ class InvitationController extends Controller
         $boundCount = $this->processInternalInvitations($user, $search, $responderIds);
 
         return response()->json([
-            'message' => "Lote massivo processado! Foram disparados {$boundCount} convites com sucesso.", 
+            'message' => "Lote massivo processado! Foram disparados {$boundCount} convites com sucesso.",
             'bound_count' => $boundCount
         ]);
     }
