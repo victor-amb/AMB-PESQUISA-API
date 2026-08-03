@@ -9,9 +9,20 @@ use App\Http\Controllers\Api\SpecialtyController;
 use App\Http\Controllers\Api\UserController;
 use Illuminate\Support\Facades\Route;
 
+// Verificação de API
+Route::get('/', function () {
+    return response()->json([
+        'status' => 'ok',
+        'service' => 'AMB Pesquisas API',
+        'timestamp' => now()->toIso8601String(),
+    ]);
+});
+
+
 // ========================================================
 // 1. ROTAS PÚBLICAS (Sem Autenticação)
 // ========================================================
+
 Route::post('/login', [AuthController::class, 'login']);
 
 

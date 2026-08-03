@@ -53,6 +53,8 @@ return [
     */
 
     'url' => env('APP_URL', 'http://localhost'),
+    'admin_url' => env('ADMIN_URL', 'http://localhost:8011'),
+    'responder_url' => env('RESPONDER_URL', 'http://localhost:8012'),
 
     /*
     |--------------------------------------------------------------------------

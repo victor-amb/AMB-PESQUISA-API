@@ -107,10 +107,11 @@ class InvitationController extends Controller
 
         try {
             if ($type === 'system_access') {
-                $emailBody = "Olá!\n\nVocê recebeu um convite de acesso à Plataforma Científica AMB.\n\nAcesse: https://amb-pesquisas.org.br/";
+                $adminUrl = rtrim(config('app.admin_url'), '/');
+                $emailBody = "Olá!\n\nVocê recebeu um convite de acesso à Plataforma Científica AMB.\n\nAcesse: {$adminUrl}";
                 $subject = "Convite de Acesso - AMB Pesquisas";
             } else {
-                $surveyUrl = "https://amb-pesquisas.org.br/responder/{$invitation->search->id}";
+                $surveyUrl = rtrim(config('app.responder_url'), '/') . "/responder/{$invitation->search->id}";
                 $emailBody = "Olá, {$invitation->name}.\n\nReenviando o convite para a pesquisa científica: \"{$invitation->search->title}\".\n\nParticipe pelo link: " . $surveyUrl;
                 $subject = "Lembrete: Convite Científico AMB - " . $invitation->search->title;
             }
@@ -277,7 +278,6 @@ class InvitationController extends Controller
 
         DB::transaction(function () use ($usersData, $sender, $search, $initialStatus, $nativeColumns, $customMessage, &$newCount, &$existingCount) {
 
-            // 🌟 CORREÇÃO 1: Limpa duplicatas exatas dentro da própria requisição/planilha
             $uniqueUsers = collect($usersData)->unique(function ($item) {
                 return trim(strtolower($item['email'] ?? ''));
             })->filter(function ($item) {
@@ -288,8 +288,6 @@ class InvitationController extends Controller
                 $rowData = array_change_key_case($rowData, CASE_LOWER);
                 $email = trim(strtolower($rowData['email']));
 
-                // 🌟 CORREÇÃO 2: withoutGlobalScopes() garante que o Laravel ache o usuário 
-                // mesmo se ele estiver em uma lixeira (SoftDeletes) ou oculto por algum Global Scope.
                 $responder = Responder::withoutGlobalScopes()->where('email', $email)->first();
 
                 $metadata = [];
@@ -302,7 +300,6 @@ class InvitationController extends Controller
                 if ($responder) {
                     // --- USUÁRIO JÁ EXISTE ---
 
-                    // 🌟 Se o sistema usa SoftDeletes e o usuário estava deletado, nós o restauramos
                     if (method_exists($responder, 'trashed') && $responder->trashed()) {
                         $responder->restore();
                         $responder->active = true;
@@ -330,7 +327,7 @@ class InvitationController extends Controller
 
                     if ($search->status === 'published') {
                         try {
-                            $surveyUrl = env('APP_URL', 'https://amb-pesquisas.org.br') . "/responder/{$search->id}";
+                            $surveyUrl = rtrim(config('app.responder_url'), '/') . "/responder/{$search->id}";
                             $msgPublished = $customMessage ?? "Olá, {$responder->name}. Você foi convidado para a pesquisa: \"{$search->title}\".\nAcesse: {$surveyUrl}";
 
                             Mail::raw($msgPublished, fn($m) => $m->to($email)->subject("Convite AMB - " . $search->title));
@@ -381,7 +378,7 @@ class InvitationController extends Controller
 
                     $newCount++;
 
-                    $loginUrl = env('FRONTEND_URL', env('APP_URL', 'https://amb-pesquisas.org.br')) . '/login';
+                    $loginUrl = rtrim(config('app.responder_url'), '/') . '/login';
 
                     if ($search->status === 'published') {
                         $baseMsg = $customMessage ?? "Você foi convidado para responder a pesquisa: \"{$search->title}\" na base científica da AMB.";
@@ -443,7 +440,6 @@ class InvitationController extends Controller
                 } else {
                     // --- NOVO USUÁRIO AVULSO ---
 
-                    // 🌟 1. Gera senha plana
                     $plainPassword = Str::random(10);
 
                     $newResponder = Responder::create([
@@ -469,8 +465,7 @@ class InvitationController extends Controller
 
                     $newCount++;
 
-                    // 🌟 2. Disparo de E-mail de Boas Vindas com as credenciais provisórias
-                    $loginUrl = env('FRONTEND_URL', env('APP_URL', 'https://amb-pesquisas.org.br')) . '/login';
+                    $loginUrl = rtrim(config('app.admin_url'), '/') . '/login';
                     $baseMsg = $customMessage ?? "Você está sendo convidado por {$sender->name} para se credenciar na Plataforma Científica AMB.";
 
                     $msgWithCredentials = $baseMsg . "\n\nPara acessar o sistema, utilize seus dados abaixo:\n\nE-mail de acesso: {$email}\nSenha Provisória: {$plainPassword}\n\n*Recomendamos alterar sua senha no menu Perfil logo após o seu primeiro acesso.";
@@ -566,24 +561,107 @@ class InvitationController extends Controller
     // =========================================================================
     // LEITURAS E OUTROS HELPERS
     // =========================================================================
+    /**
+     * Listar os convidados (targets) de uma pesquisa e calcular sua exclusividade
+     */
     public function getTargets(Request $request, $id): JsonResponse
     {
-        // 🌟 CORREÇÃO: Carregar os dados completos do médico e suas especialidades!
+        $currentUser = $request->user();
+
         $invitations = Search::findOrFail($id)->invitations()
-            ->with(['responder:id,name,email,crm,crm_state,active', 'responder.specialties:id,name'])
+            ->with(['responder:id,name,email,crm,crm_state,active,inviter_id,created_at', 'responder.specialties:id,name'])
             ->get();
 
         $completed = SearchAnswer::where('search_id', $id)->where('progress_status', 'completed')->pluck('responder_id')->toArray();
         $inProgress = SearchAnswer::where('search_id', $id)->where('progress_status', 'in_progress')->pluck('responder_id')->toArray();
 
-        $invitations->map(function ($invite) use ($completed, $inProgress) {
-            $invite->has_completed = in_array($invite->responder_id, $completed);
-            $invite->is_in_progress = in_array($invite->responder_id, $inProgress);
-            $invite->not_started = (!$invite->has_completed && !$invite->is_in_progress);
+        $emails = $invitations->pluck('email')->toArray();
+        $responderIds = $invitations->pluck('responder_id')->filter()->toArray();
+
+        $invitationCounts = DB::table('search_invitations')
+            ->whereIn('email', $emails)
+            ->select('email', DB::raw('count(*) as total'))
+            ->groupBy('email')
+            ->pluck('total', 'email');
+
+        $answerCounts = DB::table('search_answers')
+            ->whereIn('responder_id', $responderIds)
+            ->select('responder_id', DB::raw('count(*) as total'))
+            ->groupBy('responder_id')
+            ->pluck('total', 'responder_id');
+
+        $invitations->map(function ($invite) use ($completed, $inProgress, $invitationCounts, $answerCounts, $currentUser) {
+            $invite->setAttribute('has_completed', in_array($invite->responder_id, $completed));
+            $invite->setAttribute('is_in_progress', in_array($invite->responder_id, $inProgress));
+            $invite->setAttribute('not_started', (!$invite->has_completed && !$invite->is_in_progress));
+
+            $otherInvites = ($invitationCounts[$invite->email] ?? 0) > 1;
+            $hasAnyAnswers = ($answerCounts[$invite->responder_id] ?? 0) > 0;
+
+            $createdForThisSearch = false;
+            if ($invite->responder && $invite->responder->created_at && $invite->created_at) {
+                $createdForThisSearch = $invite->responder->created_at->diffInSeconds($invite->created_at) < 5;
+            }
+
+            $isCreator = false;
+            if ($currentUser->type === 'master') {
+                $isCreator = true;
+            } else {
+                if ($invite->responder && $invite->responder->inviter_id === $currentUser->id) {
+                    $isCreator = true;
+                } elseif ($invite->sender_id === $currentUser->id) {
+                    $isCreator = true;
+                }
+            }
+
+            $isExclusive = $isCreator && !$otherInvites && !$hasAnyAnswers && $createdForThisSearch;
+            $invite->setAttribute('is_exclusive', $isExclusive);
+
             return $invite;
         });
 
         return response()->json($invitations);
+    }
+
+    public function removeTarget(Request $request, $search_id, $user_id): JsonResponse
+    {
+        $currentUser = $request->user();
+        $removeFromSystem = filter_var($request->query('system', false), FILTER_VALIDATE_BOOLEAN);
+
+        if (SearchAnswer::where('search_id', $search_id)->where('responder_id', $user_id)->exists()) {
+            return response()->json(['message' => 'O usuário iniciou o preenchimento. Remoção abortada.'], 409);
+        }
+
+        $responder = Responder::findOrFail($user_id);
+        $search = Search::findOrFail($search_id);
+
+        DB::transaction(function () use ($search, $responder, $removeFromSystem, $currentUser) {
+            $searchInvitation = $search->invitations()->where('email', $responder->email)->first();
+            $createdForThisSearch = false;
+            if ($searchInvitation && $responder->created_at && $searchInvitation->created_at) {
+                $createdForThisSearch = $responder->created_at->diffInSeconds($searchInvitation->created_at) < 5;
+            }
+
+            if ($searchInvitation) {
+                $searchInvitation->delete();
+            }
+
+            if ($removeFromSystem) {
+                $hasOtherInvitations = DB::table('search_invitations')->where('email', $responder->email)->exists();
+                $hasAnswers = DB::table('search_answers')->where('responder_id', $responder->id)->exists();
+
+                $systemSenderId = DB::table('system_invitations')->where('email', $responder->email)->value('sender_id');
+                $isCreator = ($currentUser->type === 'master' || $responder->inviter_id === $currentUser->id || $systemSenderId === $currentUser->id);
+
+                if ($isCreator && !$hasOtherInvitations && !$hasAnswers && $createdForThisSearch) {
+                    DB::table('system_invitations')->where('email', $responder->email)->delete();
+                    $responder->update(['active' => 0]);
+                    $responder->delete();
+                }
+            }
+        });
+
+        return response()->json(['message' => 'Remoção processada com sucesso.']);
     }
 
     /**
@@ -593,7 +671,6 @@ class InvitationController extends Controller
     {
         $search = Search::findOrFail($id);
 
-        // Lista usuários do tipo director (e master se quiser) exceto quem já gerencia ou é o autor
         $managedUserIds = $search->managers()->pluck('user_id')->toArray();
 
         $query = User::where('type', 'director')
@@ -638,7 +715,6 @@ class InvitationController extends Controller
 
                 $passwordProvisoria = Str::random(10);
 
-                // 1. Cadastra o usuário de fora como Diretor
                 $newUser = User::create([
                     'name' => trim($data['name']),
                     'email' => $email,
@@ -648,10 +724,8 @@ class InvitationController extends Controller
                     'inviter_id' => $sender->id
                 ]);
 
-                // 🌟 NOVO: Adiciona o novo diretor na tabela search_managers imediatamente
                 $search->managers()->syncWithoutDetaching([$newUser->id]);
 
-                // 2. Cria o registro de Convite de Pesquisa
                 SearchInvitation::create([
                     'search_id' => $search->id,
                     'sender_id' => $sender->id,
@@ -662,8 +736,8 @@ class InvitationController extends Controller
                     'responder_id' => null
                 ]);
 
-                // 3. Dispara e-mail contendo credenciais temporárias
-                $emailBody = "Olá, {$newUser->name}.\n\nO diretor {$sender->name} está te convidando para co-gerenciar a pesquisa científica: \"{$search->title}\".\n\nComo você não possui cadastro, criamos credenciais temporárias para o seu primeiro acesso.\n\nLink: https://amb-pesquisas.org.br/login\nE-mail: {$email}\nSenha Provisória: {$passwordProvisoria}\n\nEntre no sistema e altere sua senha no seu primeiro acesso.";
+                $adminUrl = rtrim(config('app.admin_url'), '/');
+                $emailBody = "Olá, {$newUser->name}.\n\nO diretor {$sender->name} está te convidando para co-gerenciar a pesquisa científica: \"{$search->title}\".\n\nComo você não possui cadastro, criamos credenciais temporárias para o seu primeiro acesso.\n\nLink: {$adminUrl}/login\nE-mail: {$email}\nSenha Provisória: {$passwordProvisoria}\n\nEntre no sistema e altere sua senha no seu primeiro acesso.";
                 Mail::raw($emailBody, fn($msg) => $msg->to($email)->subject("Convite de Co-gestão Científica - AMB"));
 
                 return response()->json(['message' => 'Novo diretor convidado e credenciais geradas com sucesso!']);
@@ -674,7 +748,6 @@ class InvitationController extends Controller
             // -------------------------------------------------------------------------
             $targetUser = User::where('email', $email)->where('type', 'director')->firstOrFail();
 
-            // Adiciona o diretor da base na tabela search_managers imediatamente
             $search->managers()->syncWithoutDetaching([$targetUser->id]);
 
             SearchInvitation::updateOrCreate(
@@ -700,7 +773,6 @@ class InvitationController extends Controller
      */
     public function getInvitedManagers($id): JsonResponse
     {
-        // Traz convites vinculados à pesquisa que não possuem responder_id (ou seja, são co-gestores/diretores)
         $invitations = DB::table('search_invitations')
             ->where('search_id', $id)
             ->whereNull('responder_id')
@@ -719,7 +791,6 @@ class InvitationController extends Controller
         $user = $request->user();
         $search = Search::findOrFail($id);
 
-        // Busca o convite de co-gestão específico
         $invitation = DB::table('search_invitations')
             ->where('id', $invitationId)
             ->where('search_id', $id)
@@ -729,37 +800,26 @@ class InvitationController extends Controller
             return response()->json(['message' => 'Convite não localizado.'], 404);
         }
 
-        // Apenas o autor original da pesquisa (quem criou) ou um usuário Master pode remover
         if ($user->type !== 'master' && $search->author_id !== $user->id) {
             return response()->json(['message' => 'Operação negada: Apenas o diretor autor do projeto científico pode revogar co-gestores.'], 403);
         }
 
         DB::transaction(function () use ($invitation, $search) {
-            // 1. Remove da tabela de convites da pesquisa
             DB::table('search_invitations')->where('id', $invitation->id)->delete();
 
-            // 2. Busca o Usuário associado a este e-mail
             $invitedUser = User::where('email', $invitation->email)->first();
 
             if ($invitedUser) {
-                // 3. Desvincula o usuário da tabela pivô de gerenciadores da pesquisa atual
                 $search->managers()->detach($invitedUser->id);
 
-                // 4. LÓGICA DE EXCLUSÃO (Interno vs Externo)
-                // Verifica se o usuário ainda possui convites para outras pesquisas
                 $hasOtherInvitations = DB::table('search_invitations')
                     ->where('email', $invitedUser->email)
                     ->exists();
 
-                // Verifica se o usuário já gerencia outras pesquisas (além desta que acabamos de remover)
-                // Usamos o próprio relacionamento do Eloquent para contar se ainda sobrou alguma
-                $hasOtherManagements = DB::table('search_managers') // Substitua 'search_user' pelo nome real da sua tabela pivô, ex: 'search_managers' se for diferente
+                $hasOtherManagements = DB::table('search_managers')
                     ->where('user_id', $invitedUser->id)
                     ->exists();
 
-                // Se o usuário foi convidado por alguém (inviter_id não nulo) 
-                // E não possui mais NENHUM vínculo com outras pesquisas no sistema...
-                // Significa que ele era um perfil Externo criado só para isso. Removemos do projeto todo.
                 if (!$hasOtherInvitations && !$hasOtherManagements && $invitedUser->inviter_id !== null) {
                     $invitedUser->update(['active' => 0]);
                     $invitedUser->delete();
@@ -769,50 +829,6 @@ class InvitationController extends Controller
 
         return response()->json(['message' => 'Co-gestor removido e acessos revogados com sucesso.']);
     }
-
-    public function removeTarget(Request $request, $search_id, $user_id): JsonResponse
-    {
-        // Resgata a flag opcional. Se não for enviada, assume false (protege legados)
-        $removeFromSystem = filter_var($request->query('system', false), FILTER_VALIDATE_BOOLEAN);
-
-        if (SearchAnswer::where('search_id', $search_id)->where('responder_id', $user_id)->exists()) {
-            return response()->json(['message' => 'O usuário iniciou o preenchimento. Remoção abortada.'], 409);
-        }
-
-        $responder = Responder::findOrFail($user_id);
-        $search = Search::findOrFail($search_id);
-
-        DB::transaction(function () use ($search, $responder, $removeFromSystem) {
-            // 1. Remove o convite específico desta pesquisa
-            $search->invitations()->where('email', $responder->email)->delete();
-
-            // 2. Lógica de Exclusão do Sistema (A mesma regra dos Diretores)
-            if ($removeFromSystem) {
-                // Checa se o usuário tem convites para responder OUTRAS pesquisas
-                $hasOtherInvitations = DB::table('search_invitations')
-                    ->where('email', $responder->email)
-                    ->exists();
-
-                // Checa se o usuário já tem respostas consolidadas no banco de dados
-                $hasAnswers = DB::table('search_answers')
-                    ->where('responder_id', $responder->id)
-                    ->exists();
-
-                // Regra de Ouro: Só destrói a conta se ele estiver completamente "órfão"
-                if (!$hasOtherInvitations && !$hasAnswers) {
-                    // Limpa também eventuais convites de sistema que estivessem aguardando
-                    DB::table('system_invitations')->where('email', $responder->email)->delete();
-
-                    // Inativa e aplica o Soft Delete
-                    $responder->update(['active' => 0]);
-                    $responder->delete();
-                }
-            }
-        });
-
-        return response()->json(['message' => 'Remoção processada com sucesso.']);
-    }
-
 
     // =========================================================================
     // MOTORES ÚNICOS (DRY) DE PROCESSAMENTO DE CONVITES E VALIDAÇÃO
@@ -827,7 +843,7 @@ class InvitationController extends Controller
         $this->validateSearchIsOpen($search);
 
         $initialStatus = $search->status === 'published' ? 'sent' : 'pending_publish';
-        $surveyUrl = "https://amb-pesquisas.org.br/responder/{$search->id}";
+        $surveyUrl = rtrim(config('app.responder_url'), '/') . "/responder/{$search->id}";
         $boundCount = 0;
 
         $responders = Responder::whereIn('id', $responderIds)->get();
@@ -872,16 +888,10 @@ class InvitationController extends Controller
             $query->whereNotIn('email', $invitedEmails);
         }
 
-        // Regra do Projeto: Se a pesquisa tem especialidades, só foca nelas
         if ($search->specialties->count() > 0) {
             $query->whereHas('specialties', fn($q) => $q->whereIn('specialties.id', $search->specialties->pluck('id')->toArray()));
         }
 
-        // ==========================================
-        // 🌟 APLICAÇÃO DOS FILTROS DO FRONTEND
-        // ==========================================
-
-        // 1. Busca por Texto (Nome, Email ou CRM)
         if ($request->filled('search')) {
             $searchTerm = $request->search;
             $query->where(function ($q) use ($searchTerm) {
@@ -891,7 +901,6 @@ class InvitationController extends Controller
             });
         }
 
-        // 2. Filtro de Especialidade
         if ($request->filled('specialty') && $request->specialty !== 'all') {
             if ($request->specialty === 'none') {
                 $query->doesntHave('specialties');
@@ -900,7 +909,6 @@ class InvitationController extends Controller
             }
         }
 
-        // 3. Cruzamento Histórico (Avançado)
         if ($request->filled('past_search_id') && $request->filled('past_engagement')) {
             $pastSearchId = $request->past_search_id;
             $engagements = is_array($request->past_engagement) ? $request->past_engagement : explode(',', $request->past_engagement);
@@ -910,16 +918,13 @@ class InvitationController extends Controller
                     $q->orWhereHas('searchInvitations', fn($sq) => $sq->where('search_id', $pastSearchId));
                 }
                 if (in_array('completed', $engagements)) {
-                    // 🌟 CORREÇÃO: Usando 'answers'
                     $q->orWhereHas('answers', fn($sq) => $sq->where('search_id', $pastSearchId)->where('progress_status', 'completed'));
                 }
                 if (in_array('in_progress', $engagements)) {
-                    // 🌟 CORREÇÃO: Usando 'answers'
                     $q->orWhereHas('answers', fn($sq) => $sq->where('search_id', $pastSearchId)->where('progress_status', 'in_progress'));
                 }
                 if (in_array('abstention', $engagements)) {
                     $q->orWhere(function ($subQ) use ($pastSearchId) {
-                        // 🌟 CORREÇÃO: Usando 'answers'
                         $subQ->whereHas('searchInvitations', fn($sq) => $sq->where('search_id', $pastSearchId))
                             ->whereDoesntHave('answers', fn($sq) => $sq->where('search_id', $pastSearchId));
                     });
@@ -933,18 +938,15 @@ class InvitationController extends Controller
 
     /**
      * Convidar em Massa via Filtros
-     * Captura todos os usuários do filtro, ignorando as páginas, e dispara o convite!
      */
     public function massInviteByFilter(Request $request, $id): JsonResponse
     {
         $search = Search::findOrFail($id);
         $user = $request->user();
 
-        // 1. Reconstrói a mesma query exata
         $invitedEmails = $search->invitations()->pluck('email')->toArray();
         $query = Responder::where('active', 1);
 
-        // Prevenção de erro: Só aplica o filtro se existirem e-mails para ignorar
         if (!empty($invitedEmails)) {
             $query->whereNotIn('email', $invitedEmails);
         }
@@ -966,15 +968,12 @@ class InvitationController extends Controller
             }
         }
 
-        // 2. Extrai absolutamente TODOS os IDs que deram match no banco
         $responderIds = $query->pluck('id')->toArray();
 
-        // 🌟 Prevenção Extra: Se a busca não encontrou ninguém, avisa o Front
         if (empty($responderIds)) {
             return response()->json(['message' => 'Nenhum usuário novo foi encontrado neste filtro para ser convidado.'], 400);
         }
 
-        // 3. Envia os IDs para o motor de convites interno
         $boundCount = $this->processInternalInvitations($user, $search, $responderIds);
 
         return response()->json([
@@ -984,7 +983,7 @@ class InvitationController extends Controller
     }
 
     /**
-     * Resumo Analítico de Convites (Consumido pelos Cards Superiores)
+     * Resumo Analítico de Convites
      */
     public function getInvitationSummary(Request $request, $id): JsonResponse
     {
@@ -995,7 +994,6 @@ class InvitationController extends Controller
             $query->whereHas('specialties', fn($q) => $q->whereIn('specialties.id', $search->specialties->pluck('id')->toArray()));
         }
 
-        // 🌟 CORREÇÃO 2: Ampliamos as métricas exportadas para o Frontend conseguir atualizar os cards
         $invitations = $search->invitations();
 
         return response()->json([
@@ -1009,6 +1007,7 @@ class InvitationController extends Controller
             'sent' => (clone $invitations)->where('status', 'sent')->count(),
         ]);
     }
+    
     private function validateManagementPermission(User $user, Search $search): void
     {
         $isAuthorOrManager = $search->author_id === $user->id || $search->managers()->where('user_id', $user->id)->exists();
@@ -1032,7 +1031,6 @@ class InvitationController extends Controller
      */
     public function broadcastSearchLaunch(Search $search): void
     {
-        // 1. Buscar os convites vinculados a esta pesquisa em 'pending_publish' e 'standby'
         $invitations = $search->invitations()
             ->where('status', 'pending_publish')
             ->where('delivery_status', 'standby')
@@ -1056,28 +1054,21 @@ class InvitationController extends Controller
                 continue;
             }
 
-            // 2. Tentativa 1: Enviar por E-mail
             if ($this->sendEmailNotification($invitation)) {
                 $sent = true;
                 $channelSuccess = 'success_email';
             } else {
-                // 3. Tentativa 2: WhatsApp (Fallback)
                 if ($this->sendWhatsAppNotification($invitation)) {
                     $sent = true;
                     $channelSuccess = 'success_whatsapp';
                 }
             }
 
-            // 4. Atualizar o status baseado nos resultados
             if ($sent) {
-                // Mantemos um sent_at caso a tabela do banco suporte
                 $updateData = [
                     'status' => 'sent',
                     'delivery_status' => $channelSuccess
                 ];
-
-                // Se sua migration tiver a coluna sent_at descomente a linha abaixo:
-                // $updateData['sent_at'] = now(); 
 
                 $invitation->update($updateData);
             } else {
@@ -1104,7 +1095,7 @@ class InvitationController extends Controller
             if (empty($email))
                 return false;
 
-            $surveyUrl = "https://amb-pesquisas.org.br/responder/{$invitation->search->id}";
+            $surveyUrl = rtrim(config('app.responder_url'), '/') . "/responder/{$invitation->search->id}";
             $emailBody = "A pesquisa científica da AMB: \"{$invitation->search->title}\" está aberta para coleta.\n\nAcesse: {$surveyUrl}";
 
             Mail::raw($emailBody, fn($msg) => $msg->to($email)->subject("Convite Científico AMB: " . $invitation->search->title));
@@ -1127,9 +1118,6 @@ class InvitationController extends Controller
             if (empty($phone))
                 return false;
 
-            // Exemplo de uso real no futuro com algum SDK de WhatsApp (Twilio/Z-API, etc):
-            // app(WhatsAppService::class)->sendMessage($phone, "Olá, uma nova pesquisa...");
-
             return true;
         } catch (\Exception $e) {
             Log::warning("Erro ao disparar WhatsApp para o convite {$invitation->id}: " . $e->getMessage());
@@ -1138,7 +1126,7 @@ class InvitationController extends Controller
     }
 
     /**
-     * Pré-validar e-mails da planilha antes de confirmar a carga (Suporta Sistema e Pesquisa)
+     * Pré-validar e-mails da planilha antes de confirmar a carga
      */
     public function validateCsv(Request $request): JsonResponse
     {
