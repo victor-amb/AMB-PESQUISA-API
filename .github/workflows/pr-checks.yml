@@ -1,0 +1,48 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout do código
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup do PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2' # Mude para a sua versão do PHP
+          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite
+          coverage: none
+
+      - name: 📦 Instalar dependências (Composer)
+        run: composer install --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: 🔍 Checar uso de dd() ou dump()
+        run: |
+          # Vasculha os diretórios app, routes e database atrás de dd( ou dump(
+          if grep -rn --include=\*.php -E '\bdd\(|\bdump\(' app routes database; then
+            echo "❌ ERRO: Foram encontrados dd() ou dump() esquecidos no código! Remova-os antes de continuar."
+            exit 1
+          fi
+          echo "✅ Nenhum dd() ou dump() encontrado."
+
+      - name: 🛠️ Preparar ambiente Laravel
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          touch database/database.sqlite
+
+      - name: 🧪 Rodar Testes Unitários
+        env:
+          DB_CONNECTION: sqlite
+          DB_DATABASE: database/database.sqlite
+        run: |
+          php artisan migrate --force
+          php artisan test --parallel
