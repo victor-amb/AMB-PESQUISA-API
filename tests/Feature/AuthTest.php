@@ -3,13 +3,13 @@
 namespace Tests\Feature;
 
 use App\Models\User;
-use Illuminate\Foundation\授業\RefreshDatabase;
-use Illuminate\Foundation\Testing\RefreshDatabase as TestingRefreshDatabase;
+use App\Models\Responder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class AuthTest extends TestCase
 {
-    use TestingRefreshDatabase; // Limpa o banco de dados temporário a cada teste
+    use RefreshDatabase; // Limpa o banco de dados temporário a cada teste
 
     /**
      * Testar se rotas protegidas barram usuários não autenticados.
@@ -24,25 +24,50 @@ class AuthTest extends TestCase
     }
 
     /**
-     * Testar login bem sucedido com credenciais corretas.
+     * Testar login bem sucedido para usuário Administrador (Master/Director) no portal admin.
      */
-    public function test_user_can_login_with_correct_credentials(): void
+    public function test_admin_user_can_login_with_correct_credentials(): void
     {
         $user = User::create([
-            'type' => 'common',
-            'name' => 'Dr. Teste',
-            'email' => 'teste@amb.com.br',
+            'type' => 'master',
+            'name' => 'Dr. Master',
+            'email' => 'master@amb.com.br',
             'password' => bcrypt('senha123'),
             'active' => true
         ]);
 
         $response = $this->postJson('/api/login', [
-            'email' => 'teste@amb.com.br',
-            'password' => 'senha123'
+            'email' => 'master@amb.com.br',
+            'password' => 'senha123',
+            'portal' => 'admin' // <--- Parâmetro essencial para buscar na tabela users
         ]);
 
         $response->assertStatus(200)
-                 ->assertJsonStructure(['message', 'token', 'user']);
+                 ->assertJsonStructure(['message', 'token', 'user'])
+                 ->assertJsonPath('user.type', 'master');
+    }
+
+    /**
+     * Testar login bem sucedido para usuário Comum (Responder) no portal app.
+     */
+    public function test_responder_user_can_login_with_correct_credentials(): void
+    {
+        $responder = Responder::create([
+            'name' => 'Dr. Comum',
+            'email' => 'comum@amb.com.br',
+            'password' => bcrypt('senha123'),
+            'active' => true
+        ]);
+
+        $response = $this->postJson('/api/login', [
+            'email' => 'comum@amb.com.br',
+            'password' => 'senha123',
+            'portal' => 'app' // <--- Parâmetro para buscar na tabela responders
+        ]);
+
+        $response->assertStatus(200)
+                 ->assertJsonStructure(['message', 'token', 'user'])
+                 ->assertJsonPath('user.type', 'responder');
     }
 
     /**
@@ -51,7 +76,7 @@ class AuthTest extends TestCase
     public function test_user_cannot_login_with_invalid_credentials(): void
     {
         User::create([
-            'type' => 'common',
+            'type' => 'director',
             'name' => 'Dr. Teste',
             'email' => 'teste@amb.com.br',
             'password' => bcrypt('senha123'),
@@ -60,10 +85,11 @@ class AuthTest extends TestCase
 
         $response = $this->postJson('/api/login', [
             'email' => 'teste@amb.com.br',
-            'password' => 'senhaErrada'
+            'password' => 'senhaErrada',
+            'portal' => 'admin'
         ]);
 
-        $response->assertStatus(421); // Status retornado pelo seu AuthController
+        $response->assertStatus(421); // Status retornado pelo AuthController
     }
 
     /**
@@ -72,7 +98,7 @@ class AuthTest extends TestCase
     public function test_inactive_user_cannot_login(): void
     {
         User::create([
-            'type' => 'common',
+            'type' => 'director',
             'name' => 'Dr. Inativo',
             'email' => 'inativo@amb.com.br',
             'password' => bcrypt('senha123'),
@@ -81,16 +107,17 @@ class AuthTest extends TestCase
 
         $response = $this->postJson('/api/login', [
             'email' => 'inativo@amb.com.br',
-            'password' => 'senha123'
+            'password' => 'senha123',
+            'portal' => 'admin'
         ]);
 
         $response->assertStatus(403); // Acesso proibido
     }
 
     /**
-     * Testar se o endpoint /api/me retorna os dados corretos do usuário logado.
+     * Testar se o endpoint /api/me retorna os dados corretos para um Admin logado.
      */
-    public function test_me_endpoint_returns_authenticated_user_data(): void
+    public function test_me_endpoint_returns_authenticated_admin_data(): void
     {
         $user = User::create([
             'type' => 'director',
@@ -100,7 +127,6 @@ class AuthTest extends TestCase
             'active' => true
         ]);
 
-        // Atua como o usuário logado via Sanctum
         $response = $this->actingAs($user, 'sanctum')->getJson('/api/me');
 
         $response->assertStatus(200)
@@ -109,12 +135,32 @@ class AuthTest extends TestCase
     }
 
     /**
+     * Testar se o endpoint /api/me retorna os dados corretos para um Respondente logado.
+     */
+    public function test_me_endpoint_returns_authenticated_responder_data(): void
+    {
+        $responder = Responder::create([
+            'name' => 'Responder Teste',
+            'email' => 'responder@amb.com.br',
+            'password' => bcrypt('senha123'),
+            'active' => true
+        ]);
+
+        // Atua como o respondente logado via Sanctum
+        $response = $this->actingAs($responder, 'sanctum')->getJson('/api/me');
+
+        $response->assertStatus(200)
+                 ->assertJsonPath('email', 'responder@amb.com.br')
+                 ->assertJsonPath('name', 'Responder Teste');
+    }
+
+    /**
      * Testar se o logout destrói e revoga o token de acesso.
      */
     public function test_user_can_logout_and_revoke_token(): void
     {
         $user = User::create([
-            'type' => 'common',
+            'type' => 'director',
             'name' => 'Dr. Teste',
             'email' => 'teste@amb.com.br',
             'password' => bcrypt('senha123'),

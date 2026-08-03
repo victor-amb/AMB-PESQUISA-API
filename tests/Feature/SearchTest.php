@@ -8,6 +8,8 @@ use App\Models\Specialty;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
+use App\Models\Responder;
+use App\Models\SearchInvitation;
 
 class SearchTest extends TestCase
 {
@@ -40,7 +42,7 @@ class SearchTest extends TestCase
     public function test_master_user_can_list_all_searches(): void
     {
         $master = User::create(['type' => 'master', 'name' => 'Admin', 'email' => 'm@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        
+
         // Criando os autores reais no banco para validar a chave estrangeira
         $author1 = User::create(['type' => 'director', 'name' => 'Autor 1', 'email' => 'author1@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
         $author2 = User::create(['type' => 'director', 'name' => 'Autor 2', 'email' => 'author2@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
@@ -64,7 +66,7 @@ class SearchTest extends TestCase
 
         // 1. Pesquisa criada por ele
         Search::create(['title' => 'Minha Pesquisa', 'status' => 'draft', 'questions' => $this->defaultQuestions, 'author_id' => $director->id]);
-        
+
         // 2. Pesquisa de outro, mas que ele é manager (coparticipante)
         $managedSearch = Search::create(['title' => 'Pesquisa Compartilhada', 'status' => 'draft', 'questions' => $this->defaultQuestions, 'author_id' => $otherUser->id]);
         $managedSearch->managers()->attach($director->id);
@@ -73,35 +75,6 @@ class SearchTest extends TestCase
         Search::create(['title' => 'Pesquisa Oculta', 'status' => 'draft', 'questions' => $this->defaultQuestions, 'author_id' => $otherUser->id]);
 
         $response = $this->actingAs($director, 'sanctum')->getJson('/api/searches');
-
-        $response->assertStatus(200)->assertJsonCount(2, 'data');
-    }
-
-    /**
-     * Regra Listagem (Médico Comum): Só vê pesquisas published que batam com a sua especialidade ou globais encaminhadas.
-     */
-    public function test_common_user_can_only_list_published_and_permitted_searches(): void
-    {
-        $doctor = User::create(['type' => 'common', 'name' => 'Médico', 'email' => 'med@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        $spec = Specialty::create(['name' => 'Cardiologia']);
-        $doctor->specialties()->sync([$spec->id]);
-
-        // 1. Published da especialidade dele (Deve ver)
-        $s1 = Search::create(['title' => 'Cardio Publicada', 'status' => 'published', 'questions' => $this->defaultQuestions, 'author_id' => 1]);
-        $s1->specialties()->sync([$spec->id]);
-
-        // 2. Draft da especialidade dele (Não deve ver)
-        $s2 = Search::create(['title' => 'Cardio Rascunho', 'status' => 'draft', 'questions' => $this->defaultQuestions, 'author_id' => 1]);
-        $s2->specialties()->sync([$spec->id]);
-
-        // 3. Global Publicada, mas que ele NÃO foi encaminhado/target (Não deve ver)
-        Search::create(['title' => 'Global Solta', 'status' => 'published', 'questions' => $this->defaultQuestions, 'author_id' => 1]);
-
-        // 4. Global Publicada encaminhada diretamente a ele via search_targets (Deve ver)
-        $s4 = Search::create(['title' => 'Global Direcionada', 'status' => 'published', 'questions' => $this->defaultQuestions, 'author_id' => 1]);
-        $s4->targets()->attach($doctor->id);
-
-        $response = $this->actingAs($doctor, 'sanctum')->getJson('/api/searches');
 
         $response->assertStatus(200)->assertJsonCount(2, 'data');
     }
@@ -142,7 +115,7 @@ class SearchTest extends TestCase
         $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
         $specBelongs = Specialty::create(['name' => 'Pediatria']);
         $specOther = Specialty::create(['name' => 'Psiquiatria']);
-        
+
         $director->specialties()->sync([$specBelongs->id]);
 
         $response = $this->actingAs($director, 'sanctum')->postJson('/api/searches', [
@@ -161,9 +134,10 @@ class SearchTest extends TestCase
     public function test_cannot_update_questions_if_search_is_published_or_has_answers(): void
     {
         $master = User::create(['type' => 'master', 'name' => 'Admin', 'email' => 'm@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        
+        $doctor = Responder::create(['name' => 'Médico Respondedor', 'email' => 'doc2@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+
         // 1. Pesquisa já publicada
-        $searchPublished = Search::create(['title' => 'P1', 'status' => 'published', 'questions' => $this->defaultQuestions, 'author_id' => 1]);
+        $searchPublished = Search::create(['title' => 'P1', 'status' => 'published', 'questions' => $this->defaultQuestions, 'author_id' => $master->id]);
 
         $response1 = $this->actingAs($master, 'sanctum')->putJson("/api/searches/{$searchPublished->id}", [
             'title' => 'P1 Alterada',
@@ -175,10 +149,10 @@ class SearchTest extends TestCase
         $response1->assertStatus(422); // Estrutura travada
 
         // 2. Pesquisa em Draft, mas que já possui respostas coletadas
-        $searchDraftWithAnswers = Search::create(['title' => 'P2', 'status' => 'draft', 'questions' => $this->defaultQuestions, 'author_id' => 1]);
+        $searchDraftWithAnswers = Search::create(['title' => 'P2', 'status' => 'draft', 'questions' => $this->defaultQuestions, 'author_id' => $master->id]);
         SearchAnswer::create([
             'search_id' => $searchDraftWithAnswers->id,
-            'user_id' => 1,
+            'responder_id' => $doctor->id, // 🌟 CORREÇÃO: Usa responder_id
             'answers' => ['q1' => 'Resposta Exemplo']
         ]);
 
@@ -199,16 +173,14 @@ class SearchTest extends TestCase
     {
         $master = User::create(['type' => 'master', 'name' => 'Admin', 'email' => 'm@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
         
-        // Criar um usuário médico comum real para dar a resposta
-        $doctor = User::create(['type' => 'common', 'name' => 'Médico Respondedor', 'email' => 'doc@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        // 🌟 CORREÇÃO: Médico agora é Responder!
+        $doctor = Responder::create(['name' => 'Médico Respondedor', 'email' => 'doc3@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
         
-        // Vinculamos a autoria da pesquisa ao próprio master criado
         $search = Search::create(['title' => 'Pesquisa com histórico', 'status' => 'published', 'questions' => $this->defaultQuestions, 'author_id' => $master->id]);
         
-        // Simula a resposta atrelando os IDs reais gerados na execução do teste
         SearchAnswer::create([
             'search_id' => $search->id,
-            'user_id' => $doctor->id,
+            'responder_id' => $doctor->id, // 🌟 CORREÇÃO: Usa responder_id
             'answers' => ['q1' => 'Sim']
         ]);
 

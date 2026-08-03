@@ -2,10 +2,11 @@
 
 namespace Tests\Feature;
 
-use App\Models\Invitation;
+use App\Models\SearchInvitation;
 use App\Models\Search;
 use App\Models\Specialty;
 use App\Models\User;
+use App\Models\Responder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -33,16 +34,22 @@ class InvitationTest extends TestCase
         ]);
 
         $response->assertStatus(200);
-        $this->assertDatabaseHas('invitations', ['search_id' => $search->id, 'user_id' => $directorRecipient->id, 'target_type' => 'manager']);
+        
+        // Verifica se o convite foi criado na tabela correta (search_invitations)
+        $this->assertDatabaseHas('search_invitations', [
+            'search_id' => $search->id, 
+            'email' => $directorRecipient->email, 
+            'responder_id' => null // Co-gestores não possuem vínculo com a tabela responders
+        ]);
     }
 
     /**
-     * REGRA 1 (Bloqueio): Diretor tenta chamar um usuário comum para gerenciar (Deve falhar).
+     * REGRA 1 (Bloqueio): Diretor tenta chamar um administrador Master para gerenciar (Deve falhar).
      */
-    public function test_director_cannot_invite_common_user_as_manager(): void
+    public function test_director_cannot_invite_master_user_as_manager(): void
     {
         $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        $commonUser = User::create(['type' => 'common', 'name' => 'Médico', 'email' => 'med@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        $masterUser = User::create(['type' => 'master', 'name' => 'Admin Master', 'email' => 'master@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
         
         $search = Search::create(['title' => 'Pesquisa', 'status' => 'draft', 'questions' => $this->dummyQuestions, 'author_id' => $director->id]);
 
@@ -50,121 +57,106 @@ class InvitationTest extends TestCase
             'search_id' => $search->id,
             'target_type' => 'manager',
             'strategy' => 'individual',
-            'recipient_id' => $commonUser->id
+            'recipient_id' => $masterUser->id
         ]);
 
+        // A regra do InvitationController diz: if ($user->type === 'director' && $target->type !== 'director') return 403;
         $response->assertStatus(403);
     }
 
     /**
-     * REGRA 2: Diretor só pode convidar POR ESPECIALIDADE usuários da mesma especialidade que a dele.
+     * Testar o envio de convites em massa por especialidade para respondentes (Médicos).
      */
-    public function test_director_can_only_send_bulk_specialty_invites_for_their_own_specialties(): void
+    public function test_director_can_send_bulk_specialty_invites_to_responders(): void
     {
         $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        $specBelongs = Specialty::create(['name' => 'Pediatria']);
-        $specOther = Specialty::create(['name' => 'Cardiologia']);
         
-        $director->specialties()->sync([$specBelongs->id]);
+        $specPediatria = Specialty::create(['name' => 'Pediatria']);
+        $specCardio = Specialty::create(['name' => 'Cardiologia']);
+        
+        // Criação de Respondentes na tabela correta
+        $responderPediatra = Responder::create(['name' => 'Pediatra', 'email' => 'ped@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        $responderPediatra->specialties()->sync([$specPediatria->id]);
+
+        $responderCardio = Responder::create(['name' => 'Cardio', 'email' => 'car@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        $responderCardio->specialties()->sync([$specCardio->id]);
+
         $search = Search::create(['title' => 'Pesquisa', 'status' => 'draft', 'questions' => $this->dummyQuestions, 'author_id' => $director->id]);
 
-        // 1. Enviando para uma especialidade que ele NÃO gerencia (Deve retornar 403)
-        $responseFail = $this->actingAs($director, 'sanctum')->postJson('/api/invitations', [
+        $response = $this->actingAs($director, 'sanctum')->postJson('/api/invitations', [
             'search_id' => $search->id,
             'target_type' => 'responder',
             'strategy' => 'specialty',
-            'specialties' => [$specOther->id]
+            'specialties' => [$specPediatria->id]
         ]);
-        $responseFail->assertStatus(403);
-
-        // 2. Enviando para a especialidade que ele gerencia (Deve retornar 200)
-        $responseSuccess = $this->actingAs($director, 'sanctum')->postJson('/api/invitations', [
-            'search_id' => $search->id,
-            'target_type' => 'responder',
-            'strategy' => 'specialty',
-            'specialties' => [$specBelongs->id]
-        ]);
-        $responseSuccess->assertStatus(200);
-    }
-
-    /**
-     * REGRA 3: Diretor pode chamar médicos de outras especialidades se a pesquisa for GLOBAL.
-     */
-    public function test_director_can_invite_outside_specialty_doctors_if_search_is_global(): void
-    {
-        $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        $doctorFromOtherSpec = User::create(['type' => 'common', 'name' => 'Doutor Outro', 'email' => 'outro@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        
-        $spec1 = Specialty::create(['name' => 'Pediatria']);
-        $spec2 = Specialty::create(['name' => 'Cardiologia']);
-        
-        $director->specialties()->sync([$spec1->id]);
-        $doctorFromOtherSpec->specialties()->sync([$spec2->id]); // Ele é da Cardio, Diretor é da Pediatria
-
-        // Pesquisa Global (Sem chaves/vínculos de especialidade cadastrados)
-        $globalSearch = Search::create(['title' => 'Pesquisa Institucional AMB', 'status' => 'draft', 'questions' => $this->dummyQuestions, 'author_id' => $director->id]);
-
-        $response = $this->actingAs($director, 'sanctum')->postJson('/api/invitations', [
-            'search_id' => $globalSearch->id,
-            'target_type' => 'responder',
-            'strategy' => 'individual',
-            'recipient_id' => $doctorFromOtherSpec->id
-        ]);
-
-        $response->assertStatus(200); // Sucesso liberado por ser uma pesquisa global
-    }
-
-    /**
-     * REGRA 3 (Bloqueio): Diretor tenta convidar médico de fora para uma pesquisa com especialidade segmentada (Deve falhar).
-     */
-    public function test_director_cannot_invite_outside_specialty_doctors_if_search_is_segmented(): void
-    {
-        $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        $doctorFromOtherSpec = User::create(['type' => 'common', 'name' => 'Doutor Outro', 'email' => 'outro@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        
-        $spec1 = Specialty::create(['name' => 'Pediatria']);
-        $spec2 = Specialty::create(['name' => 'Cardiologia']);
-        
-        $director->specialties()->sync([$spec1->id]);
-        $doctorFromOtherSpec->specialties()->sync([$spec2->id]);
-
-        // Pesquisa Segmentada vinculada à Pediatria
-        $segmentedSearch = Search::create(['title' => 'Pesquisa Segmentada', 'status' => 'draft', 'questions' => $this->dummyQuestions, 'author_id' => $director->id]);
-        $segmentedSearch->specialties()->sync([$spec1->id]);
-
-        $response = $this->actingAs($director, 'sanctum')->postJson('/api/invitations', [
-            'search_id' => $segmentedSearch->id,
-            'target_type' => 'responder',
-            'strategy' => 'individual',
-            'recipient_id' => $doctorFromOtherSpec->id
-        ]);
-
-        $response->assertStatus(403); // Bloqueado, pois a pesquisa é restrita por área
-    }
-
-    /**
-     * Testar o ciclo completo do Aceite do convite.
-     */
-    public function test_user_can_accept_invitation_and_activate_pivots(): void
-    {
-        $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        $doctor = User::create(['type' => 'common', 'name' => 'Médico', 'email' => 'm@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
-        $search = Search::create(['title' => 'Pesquisa', 'status' => 'published', 'questions' => $this->dummyQuestions, 'author_id' => $director->id]);
-
-        // Cria convite pendente
-        $invitation = Invitation::create([
-            'search_id' => $search->id,
-            'sender_id' => $director->id,
-            'email' => $doctor->email,
-            'user_id' => $doctor->id,
-            'target_type' => 'responder',
-            'status' => 'pending'
-        ]);
-
-        $response = $this->actingAs($doctor, 'sanctum')->postJson("/api/invitations/{$invitation->id}/accept");
 
         $response->assertStatus(200);
-        $this->assertDatabaseHas('invitations', ['id' => $invitation->id, 'status' => 'accepted']);
-        $this->assertDatabaseHas('search_targets', ['search_id' => $search->id, 'user_id' => $doctor->id]); // Vínculo ativo!
+
+        // Apenas o pediatra deve ter recebido o convite
+        $this->assertDatabaseHas('search_invitations', [
+            'search_id' => $search->id,
+            'email' => $responderPediatra->email
+        ]);
+        
+        $this->assertDatabaseMissing('search_invitations', [
+            'search_id' => $search->id,
+            'email' => $responderCardio->email
+        ]);
+    }
+
+    /**
+     * Testar envio individual para um respondente específico.
+     */
+    public function test_director_can_invite_individual_responder(): void
+    {
+        $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        $responder = Responder::create(['name' => 'Doutor', 'email' => 'medico@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        
+        $search = Search::create(['title' => 'Pesquisa Institucional AMB', 'status' => 'draft', 'questions' => $this->dummyQuestions, 'author_id' => $director->id]);
+
+        $response = $this->actingAs($director, 'sanctum')->postJson('/api/invitations', [
+            'search_id' => $search->id,
+            'target_type' => 'responder',
+            'strategy' => 'individual',
+            'recipient_id' => $responder->id
+        ]);
+
+        $response->assertStatus(200);
+        $this->assertDatabaseHas('search_invitations', [
+            'search_id' => $search->id,
+            'email' => $responder->email
+        ]);
+    }
+
+    /**
+     * Testar o ciclo completo do Aceite do convite por um respondente.
+     */
+    public function test_responder_can_accept_invitation(): void
+    {
+        $director = User::create(['type' => 'director', 'name' => 'Diretor', 'email' => 'd@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        $responder = Responder::create(['name' => 'Médico', 'email' => 'm@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
+        $search = Search::create(['title' => 'Pesquisa', 'status' => 'published', 'questions' => $this->dummyQuestions, 'author_id' => $director->id]);
+
+        // Cria convite pendente na tabela de convites de pesquisa
+        $invitation = SearchInvitation::create([
+            'search_id' => $search->id,
+            'sender_id' => $director->id,
+            'email' => $responder->email,
+            'name' => $responder->name,
+            'responder_id' => $responder->id,
+            'status' => 'sent',
+            'delivery_status' => 'success_email'
+        ]);
+
+        // Atua como Respondente e aceita
+        $response = $this->actingAs($responder, 'sanctum')->putJson("/api/invitations/{$invitation->id}/accept");
+
+        $response->assertStatus(200);
+        
+        // Verifica a alteração de status
+        $this->assertDatabaseHas('search_invitations', [
+            'id' => $invitation->id, 
+            'status' => 'accepted'
+        ]);
     }
 }

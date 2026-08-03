@@ -12,29 +12,32 @@ use Illuminate\Support\Facades\Storage;
 class SpecialtyController extends Controller
 {
     /**
+     * Trava de Segurança: Verifica se o usuário autenticado é um Master
+     */
+    private function isMaster($user): bool
+    {
+        return $user && ($user instanceof \App\Models\User) && $user->type === 'master';
+    }
+
+    /**
      * Listar Especialidades Médicas
      */
     public function index(Request $request): JsonResponse
     {
-        $user = $request->user();
-        
-        // Se for Master, traz histórico completo (ativos e inativos) para o CRUD dedicado
-        if ($user && $user->type === 'master') {
-            $specialties = Specialty::orderBy('name')->paginate(15);
-            return response()->json($specialties);
+        if (!$this->isMaster($request->user())) {
+            return response()->json(['message' => 'Operação exclusiva para administradores Master.'], 403);
         }
 
-        // Se for Diretor ou Respondente, expõe unicamente as especialidades ativas
-        $activeSpecialties = Specialty::where('active', true)->orderBy('name')->get();
-        return response()->json($activeSpecialties);
+        $specialties = Specialty::orderBy('name')->paginate(15);
+        return response()->json($specialties);
     }
 
     /**
-     * Criar Especialidade Médica (Suporta Binary Multipart)
+     * Criar Especialidade Médica
      */
     public function store(StoreSpecialtyRequest $request): JsonResponse
     {
-        if ($request->user()->type !== 'master') {
+        if (!$this->isMaster($request->user())) {
             return response()->json(['message' => 'Operação exclusiva para administradores Master.'], 403);
         }
 
@@ -57,24 +60,27 @@ class SpecialtyController extends Controller
     /**
      * Visualizar Detalhes
      */
-    public function show($id): JsonResponse
+    public function show(Request $request, $id): JsonResponse
     {
+        if (!$this->isMaster($request->user())) {
+            return response()->json(['message' => 'Operação exclusiva para administradores Master.'], 403);
+        }
+
         $specialty = Specialty::findOrFail($id);
         return response()->json($specialty);
     }
 
     /**
-     * Atualizar Especialidade (Suporta mutações parciais ou troca de logo)
+     * Atualizar Especialidade
      */
     public function update(Request $request, $id): JsonResponse
     {
-        if ($request->user()->type !== 'master') {
+        if (!$this->isMaster($request->user())) {
             return response()->json(['message' => 'Operação exclusiva para administradores Master.'], 403);
         }
 
         $specialty = Specialty::findOrFail($id);
         
-        // Validação inline pragmática por conta do suporte multipart via POST/PUT override do PHP
         $request->validate([
             'name' => 'required|string|max:255',
             'logo' => 'nullable|image|mimes:jpeg,png,jpg,svg|max:2048'
@@ -83,7 +89,6 @@ class SpecialtyController extends Controller
         $specialty->name = $request->input('name');
 
         if ($request->hasFile('logo')) {
-            // Remove mídia legada se aplicável
             if ($specialty->logo_url) {
                 $oldPath = str_replace('/storage/', '', $specialty->logo_url);
                 Storage::disk('public')->delete($oldPath);
@@ -102,17 +107,16 @@ class SpecialtyController extends Controller
     }
 
     /**
-     * Exclusão Lógica / Inativação (Regra de Ouro)
+     * Exclusão Lógica / Inativação
      */
     public function destroy(Request $request, $id): JsonResponse
     {
-        if ($request->user()->type !== 'master') {
-            return response()->json(['message' => 'Permissão negada.'], 403);
+        if (!$this->isMaster($request->user())) {
+            return response()->json(['message' => 'Operação exclusiva para administradores Master.'], 403);
         }
 
         $specialty = Specialty::findOrFail($id);
         
-        // Alterna dinamicamente o status para preservar o histórico relacional das tabelas
         $specialty->active = !$specialty->active;
         $specialty->save();
 

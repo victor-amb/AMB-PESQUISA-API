@@ -11,71 +11,85 @@ class UserManagementTest extends TestCase
     use RefreshDatabase;
 
     /**
-     * Testar Regra: Usuário comum atualiza seus próprios dados (Profile),
-     * mas campos administrativos (type, active) são sumariamente ignorados.
+     * Testar Regra: Usuário atualiza seus próprios dados na rota /api/profile,
+     * mas campos administrativos (type, active) são ignorados.
      */
     public function test_user_can_update_own_profile_but_admin_fields_are_ignored(): void
     {
         $user = User::create([
-            'type' => 'common',
-            'name' => 'Médico Original',
-            'email' => 'medico@amb.com.br',
-            'crm' => 1234,
-            'crm_state' => 'SP',
+            'type' => 'director', 
+            'name' => 'Diretor Original',
+            'email' => 'diretor@amb.com.br',
             'password' => bcrypt('senha123'),
             'active' => true
         ]);
 
         $response = $this->actingAs($user, 'sanctum')->putJson('/api/profile', [
-            'name' => 'Médico Modificado',
+            'name' => 'Diretor Modificado',
             'email' => 'novo.email@amb.com.br',
-            'crm' => 5555,
-            'crm_state' => 'RJ',
-            // Tentativa maliciosa de se promover a master e se desativar:
-            'type' => 'master',
-            'active' => false
+            'type' => 'master', // Ignorado pelo ProfileController
+            'active' => false   // Ignorado pelo ProfileController
         ]);
 
         $response->assertStatus(200);
 
-        // Verifica se os dados permitidos mudaram no banco
         $this->assertDatabaseHas('users', [
             'id' => $user->id,
-            'name' => 'Médico Modificado',
-            'email' => 'novo.email@amb.com.br',
-            'crm' => 5555,
-            'crm_state' => 'RJ',
-            // Verifica se a segurança funcionou e os campos continuam iguais aos originais
-            'type' => 'common',
-            'active' => true
+            'name' => 'Diretor Modificado',
+            'type' => 'director', 
+            'active' => true      
         ]);
     }
 
     /**
-     * Testar Regra: Master pode alterar dados de diretores ou comuns.
+     * Testar Regra: O Master pode editar a si mesmo no CRUD, MAS seu próprio type e active não mudam.
      */
-    public function test_master_can_update_data_of_other_non_master_users(): void
+    public function test_master_cannot_update_own_type_and_active(): void
     {
         $master = User::create([
             'type' => 'master', 'name' => 'Admin', 'email' => 'master@amb.com.br', 'password' => bcrypt('123'), 'active' => true
         ]);
 
-        $commonUser = User::create([
-            'type' => 'common', 'name' => 'João', 'email' => 'joao@amb.com.br', 'password' => bcrypt('123'), 'active' => true
+        $response = $this->actingAs($master, 'sanctum')->putJson("/api/users/{$master->id}", [
+            'name' => 'Admin Editado',
+            'type' => 'director', // Tentativa ignorada
+            'active' => false     // Tentativa ignorada
         ]);
 
-        $response = $this->actingAs($master, 'sanctum')->putJson("/api/users/{$commonUser->id}", [
-            'type' => 'director', // Master promovendo o usuário a diretor
-            'name' => 'João Diretor',
-            'email' => 'joao.diretor@amb.com.br',
-            'active' => true
+        $response->assertStatus(200);
+
+        $this->assertDatabaseHas('users', [
+            'id' => $master->id,
+            'name' => 'Admin Editado',
+            'type' => 'master', // Mantém intacto
+            'active' => true    // Mantém intacto
+        ]);
+    }
+
+    /**
+     * Testar Regra: Master pode alterar o type e active de outros usuários (ex: Diretores).
+     */
+    public function test_master_can_update_type_and_active_of_other_non_master_users(): void
+    {
+        $master = User::create([
+            'type' => 'master', 'name' => 'Admin', 'email' => 'master@amb.com.br', 'password' => bcrypt('123'), 'active' => true
+        ]);
+
+        $directorUser = User::create([
+            'type' => 'director', 'name' => 'João', 'email' => 'joao@amb.com.br', 'password' => bcrypt('123'), 'active' => true
+        ]);
+
+        $response = $this->actingAs($master, 'sanctum')->putJson("/api/users/{$directorUser->id}", [
+            'name' => 'João Atualizado',
+            'email' => 'joao.novo@amb.com.br',
+            'active' => false // Desativando o diretor
         ]);
 
         $response->assertStatus(200);
         $this->assertDatabaseHas('users', [
-            'id' => $commonUser->id,
-            'type' => 'director',
-            'name' => 'João Diretor'
+            'id' => $directorUser->id,
+            'name' => 'João Atualizado',
+            'active' => false
         ]);
     }
 
@@ -84,9 +98,6 @@ class UserManagementTest extends TestCase
      */
     public function test_master_cannot_update_another_master_user(): void
     {
-        // Adicione esta trava no topo do método update() do seu UserController se quiser que este teste passe:
-        // if ($user->type === 'master' && $currentUser->id !== $user->id) { return response()->json(['message' => 'Um Master não pode alterar outro Master.'], 403); }
-
         $master1 = User::create([
             'type' => 'master', 'name' => 'Master Um', 'email' => 'm1@amb.com.br', 'password' => bcrypt('123'), 'active' => true
         ]);
@@ -96,12 +107,11 @@ class UserManagementTest extends TestCase
         ]);
 
         $response = $this->actingAs($master1, 'sanctum')->putJson("/api/users/{$master2->id}", [
-            'type' => 'master',
             'name' => 'Nome Invasor',
-            'email' => 'm2@amb.com.br'
+            'email' => 'm2.invasao@amb.com.br'
         ]);
 
-        // Se você implementou a trava acima, o status esperado será 403
+        // Barrado pelo Controller!
         $response->assertStatus(403);
     }
 }

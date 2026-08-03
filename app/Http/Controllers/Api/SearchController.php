@@ -51,7 +51,7 @@ class SearchController extends Controller
             $searchTerm = $request->search;
             $query->where(function ($q) use ($searchTerm) {
                 $q->where('title', 'like', "%{$searchTerm}%")
-                  ->orWhere('description', 'like', "%{$searchTerm}%");
+                    ->orWhere('description', 'like', "%{$searchTerm}%");
             });
         }
 
@@ -72,8 +72,8 @@ class SearchController extends Controller
         // Filtro: Especialidades Relacionadas
         if ($request->filled('specialties')) {
             // O frontend (Axios) pode serializar arrays de formas diferentes (array nativo ou string separada por vírgula)
-            $specialties = is_array($request->specialties) 
-                ? $request->specialties 
+            $specialties = is_array($request->specialties)
+                ? $request->specialties
                 : explode(',', $request->specialties);
 
             if (count($specialties) > 0) {
@@ -98,7 +98,7 @@ class SearchController extends Controller
         return response()->json($query->latest()->paginate(15));
     }
 
-/**
+    /**
      * Salvar Nova Pesquisa
      * @tags Pesquisas
      */
@@ -107,10 +107,18 @@ class SearchController extends Controller
         $user = $request->user();
         $data = $request->validated();
 
+        // 🌟 NOVA BLINDAGEM: Verifica se o Diretor é dono das especialidades
+        if ($user->type === 'director' && !empty($data['specialties'])) {
+            $userSpecialties = $user->specialties->pluck('id')->toArray();
+            $unauthorized = array_diff($data['specialties'], $userSpecialties);
+
+            if (!empty($unauthorized)) {
+                return response()->json(['message' => 'Não autorizado a criar pesquisas para estas especialidades.'], 403);
+            }
+        }
+
         $data['author_id'] = $user->id;
         $search = Search::create($data);
-
-        // 🌟 NOVO: Salva o criador (autor) na tabela search_managers
         $search->managers()->attach($user->id);
 
         if (!empty($data['specialties'])) {
@@ -139,6 +147,13 @@ class SearchController extends Controller
         $user = $request->user();
         $search = Search::findOrFail($id);
         $oldStatus = $search->status;
+
+        // 🌟 NOVA BLINDAGEM: Trava a edição do JSON de perguntas
+        if ($request->has('questions')) {
+            if ($search->status === 'published' || $search->answers()->exists()) {
+                return response()->json(['message' => 'Não é possível alterar perguntas de pesquisas publicadas ou com respostas.'], 422);
+            }
+        }
 
         // Regras base (só o que pode vir nulo ou opcional mesmo)
         $rules = [

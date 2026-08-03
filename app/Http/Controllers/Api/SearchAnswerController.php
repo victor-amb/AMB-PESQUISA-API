@@ -76,8 +76,8 @@ class SearchAnswerController extends Controller
                 ->update(['status' => 'accepted']);
         }
 
-        $message = $progressStatus === 'completed' 
-            ? 'Sua participação foi registrada e finalizada com sucesso! Obrigado.' 
+        $message = $progressStatus === 'completed'
+            ? 'Sua participação foi registrada e finalizada com sucesso! Obrigado.'
             : 'Rascunho de respostas salvo com sucesso.';
 
         return response()->json([
@@ -101,38 +101,27 @@ class SearchAnswerController extends Controller
         return response()->json($searches);
     }
 
+
     /**
      * LISTAR PESQUISAS PENDENTES (Traz pesquisas não iniciadas E rascunhos em andamento)
+     * REGRA: O respondente SÓ vê a pesquisa se houver um convite formal para o e-mail dele.
      */
     public function pendingSearches(Request $request): JsonResponse
     {
         $responder = $request->user();
-        $userSpecialties = $responder->specialties->pluck('id')->toArray();
 
         $query = Search::where('status', 'published')
-            ->where(function ($q) use ($userSpecialties, $responder) {
-                
-                $q->where(function ($sq) {
-                    $sq->doesntHave('specialties')->doesntHave('invitations');
-                })
-                
-                ->orWhere(function ($sq) use ($userSpecialties) {
-                    $sq->whereHas('specialties', function ($specialtyQuery) use ($userSpecialties) {
-                        $specialtyQuery->whereIn('specialties.id', $userSpecialties);
-                    })->doesntHave('invitations');
-                })
-                
-                ->orWhereHas('invitations', function ($invQuery) use ($responder) {
-                    $invQuery->where('email', $responder->email)
-                             ->where('status', 'accepted');
-                });
-
+            ->whereHas('invitations', function ($invQuery) use ($responder) {
+                // Nova regra fundamental: Só passa se tiver convite para ele
+                $invQuery->where('email', $responder->email);
             })
             ->where(function ($q) use ($responder) {
+                // Traz se ele ainda não respondeu NADA
                 $q->whereDoesntHave('answers', function ($sub) use ($responder) {
                     $sub->where('responder_id', $responder->id);
                 })
-                ->orWhereHas('answers', function ($sub) use ($responder) {
+                    // OU se a resposta dele ainda é um rascunho (in_progress)
+                    ->orWhereHas('answers', function ($sub) use ($responder) {
                     $sub->where('responder_id', $responder->id)
                         ->where('progress_status', 'in_progress');
                 });
@@ -146,19 +135,19 @@ class SearchAnswerController extends Controller
                 ->first();
 
             $search->has_draft = $userAnswerRecord ? true : false;
-            
+
             if ($userAnswerRecord && $userAnswerRecord->answers) {
                 $flatAnswers = [];
                 foreach ($userAnswerRecord->answers as $questionId => $answerData) {
-                    $flatAnswers[$questionId] = (is_array($answerData) && isset($answerData['value'])) 
-                        ? $answerData['value'] 
+                    $flatAnswers[$questionId] = (is_array($answerData) && isset($answerData['value']))
+                        ? $answerData['value']
                         : $answerData;
                 }
                 $search->saved_answers = $flatAnswers;
             } else {
                 $search->saved_answers = null;
             }
-            
+
             return $search;
         });
 

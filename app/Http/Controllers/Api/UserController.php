@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreUserRequest;
 use App\Http\Requests\UpdateUserRequest;
-use App\Http\Requests\UpdateProfileRequest;
 use App\Models\Search;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
@@ -99,7 +98,7 @@ class UserController extends Controller
 
             if (!empty($engagements)) {
                 $query->where(function ($q) use ($searchId, $engagements) {
-                    
+
                     if (in_array('invited', $engagements)) {
                         // Convidados: estão na tabela search_invitations
                         $q->orWhereIn('users.email', function ($sub) use ($searchId) {
@@ -145,7 +144,7 @@ class UserController extends Controller
                                 });
                         });
                     }
-                    
+
                 });
             }
         }
@@ -243,14 +242,19 @@ class UserController extends Controller
         $user = User::findOrFail($id);
         $data = $request->validated();
 
-        // ⚠️ TRAVA DE INTEGRIDADE: Impede que um Master edite dados de outro Master raiz
+        // ⚠️ 1. Impede que um Master edite dados de OUTRO Master
         if ($user->type === 'master' && $currentUser->id !== $user->id) {
             return response()->json([
                 'message' => 'Acesso negado. Um Administrador Master não possui permissão para alterar o perfil de outro Master.'
             ], 403);
         }
 
-        // Diretor só edita quem está sob suas especialidades ou co-gestões e nunca pode promover ninguém a Master
+        // 🛡️ 2. NENHUM usuário pode alterar seu próprio 'type' e 'active' (inclusive o Master)
+        if ($currentUser->id === $user->id) {
+            unset($data['type'], $data['active']);
+        }
+
+        // 3. Validações de escopo do Diretor
         if ($currentUser->type === 'director') {
             if (isset($data['type']) && $data['type'] === 'master') {
                 return response()->json(['message' => 'Você não pode promover usuários ao cargo de Master.'], 403);
@@ -313,8 +317,9 @@ class UserController extends Controller
     /**
      * GESTÃO DE DADOS PRÓPRIOS (Perfil Autenticado)
      */
-    public function updateProfile(UpdateProfileRequest $request): JsonResponse
+    public function updateProfile(UpdateUserRequest $request): JsonResponse
     {
+        // O corpo do método continua EXATAMENTE igual
         $user = $request->user();
         $data = $request->validated();
 
@@ -338,7 +343,7 @@ class UserController extends Controller
         }
 
         $user->update($data);
-        
+
         // 🌟 UX & ONBOARDING: Aceita automaticamente o convite de sistema para não poluir as notificações
         if ($user instanceof \App\Models\Responder) {
             \App\Models\SystemInvitation::where('email', $user->email)
