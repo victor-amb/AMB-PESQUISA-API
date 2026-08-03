@@ -17,7 +17,6 @@ class AuthController extends Controller
      */
     public function login(LoginRequest $request): JsonResponse
     {
-        dd("Teste");
         $data = $request->validated();
         
         // DIRECIONAMENTO DE PORTAL: admin (tabela users) ou app (tabela responders)
