@@ -33,8 +33,6 @@ class InvitationTest extends TestCase
             'recipient_id' => $directorRecipient->id
         ]);
 
-        $this->fail('⚠️ Simulando uma falha crítica para ver se o GitHub Actions bloqueia a PR!');
-
         $response->assertStatus(200);
         
         // Verifica se o convite foi criado na tabela correta (search_invitations)
@@ -151,7 +149,7 @@ class InvitationTest extends TestCase
         ]);
 
         // Atua como Respondente e aceita
-        $response = $this->actingAs($responder, 'sanctum')->putJson("/api/invitations/{$invitation->id}/accept");
+        $response = $this->actingAs($responder, 'sanctum')->postJson("/api/invitations/{$invitation->id}/accept");
 
         $response->assertStatus(200);
         
