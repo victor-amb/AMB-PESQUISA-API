@@ -149,7 +149,7 @@ class InvitationTest extends TestCase
         ]);
 
         // Atua como Respondente e aceita
-        $response = $this->actingAs($responder, 'sanctum')->postJson("/api/invitations/{$invitation->id}/accept");
+        $response = $this->actingAs($responder, 'sanctum')->putJson("/api/invitations/{$invitation->id}/accept");
 
         $response->assertStatus(200);
         
