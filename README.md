@@ -110,7 +110,6 @@ AMB-PESQUISAS
 ├─ tests
 │  ├─ Feature
 │  │  ├─ AuthTest.php
-│  │  ├─ ExampleTest.php
 │  │  ├─ InvitationTest.php
 │  │  ├─ SearchAnswerTest.php
 │  │  ├─ SearchTest.php

@@ -38,7 +38,7 @@ class SpecialtySeeder extends Seeder
             ["name" => "Cardiologia", "image_path" => "/assets/images/logos_sociedades/cardiologia.jpg"],
             ["name" => "Oftalmologia", "image_path" => "/assets/images/logos_sociedades/Hematologia__Hemoterapia_e_Terapia_Celular.jpg"],
             ["name" => "Otorrinolaringologia", "image_path" => "/assets/images/logos_sociedades/ABORL.jpg"],
-            ["name" => "Cirurgia Vascular", "image_path" => "/assets/images/logos_sociedades/sbacv_completo"],
+            ["name" => "Cirurgia Vascular", "image_path" => "/assets/images/logos_sociedades/sbacv_completo.png"],
             ["name" => "Ginecologia e Obstetrícia", "image_path" => "/assets/images/logos_sociedades/Ginecologia.png"],
             ["name" => "Cirurgia Digestiva", "image_path" => "/assets/images/logos_sociedades/LOGO CBCD.jpg"],
             ["name" => "Cirurgia Oncológica", "image_path" => "/assets/images/logos_sociedades/Cirurgia_Oncologica.png"],
@@ -80,9 +80,13 @@ class SpecialtySeeder extends Seeder
             ["name" => "Urologia", "image_path" => "/assets/images/logos_sociedades/SABEM.jpg"]
         ];
 
-        // Corrige caminhos que vieram sem barra inicial
-        $dataToInsert = array_map(function ($specialty) {
+        $unique = collect($specialties)
+            ->unique(fn($item) => mb_strtolower($item['name']))
+            ->values();
+
+        $dataToInsert = $unique->map(function ($specialty) {
             $imagePath = $specialty['image_path'];
+
             if (!str_starts_with($imagePath, '/')) {
                 $imagePath = '/' . $imagePath;
             }
@@ -94,7 +98,7 @@ class SpecialtySeeder extends Seeder
                 'created_at' => now(),
                 'updated_at' => now(),
             ];
-        }, $specialties);
+        })->toArray();
 
         DB::table('specialties')->insert($dataToInsert);
     }
