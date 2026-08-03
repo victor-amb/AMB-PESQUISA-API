@@ -33,6 +33,8 @@ class InvitationTest extends TestCase
             'recipient_id' => $directorRecipient->id
         ]);
 
+        $this->fail('⚠️ Simulando uma falha crítica para ver se o GitHub Actions bloqueia a PR!');
+
         $response->assertStatus(200);
         
         // Verifica se o convite foi criado na tabela correta (search_invitations)
