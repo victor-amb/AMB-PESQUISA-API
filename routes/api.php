@@ -24,6 +24,8 @@ Route::get('/', function () {
 // ========================================================
 
 Route::post('/login', [AuthController::class, 'login']);
+Route::post('/forgot-password', [\App\Http\Controllers\Api\PasswordController::class, 'forgotPassword']);
+Route::post('/reset-password', [\App\Http\Controllers\Api\PasswordController::class, 'resetPassword']);
 
 
 // ========================================================
@@ -35,6 +37,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/me', [AuthController::class, 'me']);
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::put('/profile', [UserController::class, 'updateProfile']);
+    Route::post('/change-password', [\App\Http\Controllers\Api\PasswordController::class, 'changePassword']);
 
     // Módulo de Usuários e Especialidades
     Route::apiResource('users', UserController::class);

@@ -324,18 +324,8 @@ class UserController extends Controller
         $data = $request->validated();
 
         // 🔒 BLINDAGEM DE ESCOPO: Ignora tentativas de auto-privilégio
-        unset($data['type'], $data['active']);
+        unset($data['type'], $data['active'], $data['password'], $data['current_password']);
 
-        if (!empty($data['password'])) {
-            if (!Hash::check($data['current_password'], $user->password)) {
-                return response()->json(['message' => 'A senha atual informada está incorreta.'], 422);
-            }
-            $data['password'] = Hash::make($data['password']);
-        } else {
-            unset($data['password']);
-        }
-
-        unset($data['current_password']);
 
         // 🌟 NOVA REGRA: Marca os dados como confirmados caso seja um Respondente
         if ($user instanceof \App\Models\Responder) {
