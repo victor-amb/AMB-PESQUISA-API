@@ -104,7 +104,7 @@ class SearchAnswerController extends Controller
 
     /**
      * LISTAR PESQUISAS PENDENTES (Traz pesquisas não iniciadas E rascunhos em andamento)
-     * REGRA: O respondente SÓ vê a pesquisa se houver um convite formal para o e-mail dele.
+     * REGRA: O respondente SÓ vê a pesquisa se houver um convite ACEITO para o e-mail dele.
      */
     public function pendingSearches(Request $request): JsonResponse
     {
@@ -112,8 +112,9 @@ class SearchAnswerController extends Controller
 
         $query = Search::where('status', 'published')
             ->whereHas('invitations', function ($invQuery) use ($responder) {
-                // Nova regra fundamental: Só passa se tiver convite para ele
-                $invQuery->where('email', $responder->email);
+                // Regra: Convite associado ao e-mail E formalmente aceito
+                $invQuery->where('email', $responder->email)
+                    ->where('status', 'accepted');
             })
             ->where(function ($q) use ($responder) {
                 // Traz se ele ainda não respondeu NADA
@@ -127,14 +128,19 @@ class SearchAnswerController extends Controller
                 });
             });
 
-        $paginatedSearches = $query->with('specialties')->latest()->paginate(15);
+        // Eager loading de specialties e respostas filtradas do usuário atual (evita consultas N+1)
+        $paginatedSearches = $query->with([
+            'specialties',
+            'answers' => function ($q) use ($responder) {
+                $q->where('responder_id', $responder->id);
+            }
+        ])->latest()->paginate(15);
 
-        $paginatedSearches->getCollection()->transform(function ($search) use ($responder) {
-            $userAnswerRecord = SearchAnswer::where('search_id', $search->id)
-                ->where('responder_id', $responder->id)
-                ->first();
+        $paginatedSearches->getCollection()->transform(function ($search) {
+            // Pega a resposta previamente carregada via eager loading
+            $userAnswerRecord = $search->answers->first();
 
-            $search->has_draft = $userAnswerRecord ? true : false;
+            $search->has_draft = (bool) $userAnswerRecord;
 
             if ($userAnswerRecord && $userAnswerRecord->answers) {
                 $flatAnswers = [];
@@ -147,6 +153,9 @@ class SearchAnswerController extends Controller
             } else {
                 $search->saved_answers = null;
             }
+
+            // Limpa a collection carregada para não poluir o JSON final
+            unset($search->answers);
 
             return $search;
         });

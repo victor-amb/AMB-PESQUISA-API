@@ -34,7 +34,7 @@ class AuthController extends Controller
         if (!$account || !Hash::check($data['password'], $account->password)) {
             return response()->json([
                 'message' => 'As credenciais fornecidas estão incorretas.'
-            ], 421);
+            ], 401);
         }
 
         if (!$account->active) {

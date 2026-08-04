@@ -89,7 +89,7 @@ class AuthTest extends TestCase
             'portal' => 'admin'
         ]);
 
-        $response->assertStatus(421); // Status retornado pelo AuthController
+        $response->assertStatus(401); // Status retornado pelo AuthController
     }
 
     /**
