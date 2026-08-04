@@ -108,16 +108,16 @@ class SearchAnswerTest extends TestCase
         $doctor = Responder::create(['name' => 'Dr. Silva', 'email' => 'silva@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
         $master = User::create(['type' => 'master', 'name' => 'Admin', 'email' => 'm@amb.com.br', 'password' => bcrypt('123'), 'active' => true]);
 
-        // 1. Pesquisa COM CONVITE (Deve aparecer nas pendências)
+        // 1. Pesquisa COM CONVITE ACEITO (Deve aparecer nas pendências)
         $s1 = Search::create(['title' => 'Pesquisa Convidada 1', 'status' => 'published', 'questions' => $this->dummyQuestions, 'author_id' => $master->id]);
         SearchInvitation::create([
             'search_id' => $s1->id,
             'email' => $doctor->email,
-            'status' => 'sent',
+            'status' => 'accepted', // Regra: Convite aceito!
             'sender_id' => $master->id
         ]);
 
-        // 2. Pesquisa COM CONVITE, mas que ele JÁ RESPONDIDA/COMPLETA (Não deve aparecer nas pendências)
+        // 2. Pesquisa COM CONVITE ACEITO, mas que ele JÁ COMPLETOU (Não deve aparecer nas pendências)
         $s2 = Search::create(['title' => 'Pesquisa Convidada 2', 'status' => 'published', 'questions' => $this->dummyQuestions, 'author_id' => $master->id]);
         SearchInvitation::create([
             'search_id' => $s2->id,
@@ -129,24 +129,38 @@ class SearchAnswerTest extends TestCase
             'search_id' => $s2->id,
             'responder_id' => $doctor->id,
             'answers' => $this->dummyAnswers,
-            'progress_status' => 'completed' // Marcada como completa!
+            'progress_status' => 'completed'
         ]);
 
-        // 3. Outra Pesquisa COM CONVITE (Deve aparecer)
+        // 3. Outra Pesquisa COM CONVITE ACEITO (Deve aparecer nas pendências)
         $s3 = Search::create(['title' => 'Global Solicitada', 'status' => 'published', 'questions' => $this->dummyQuestions, 'author_id' => $master->id]);
         SearchInvitation::create([
             'search_id' => $s3->id,
+            'email' => $doctor->email,
+            'status' => 'accepted', // Regra: Convite aceito!
+            'sender_id' => $master->id
+        ]);
+
+        // 4. Pesquisa com convite PENDENTE/SENT (Não deve aparecer até ser aceito)
+        $s4 = Search::create(['title' => 'Pesquisa Pendente de Aceite', 'status' => 'published', 'questions' => $this->dummyQuestions, 'author_id' => $master->id]);
+        SearchInvitation::create([
+            'search_id' => $s4->id,
             'email' => $doctor->email,
             'status' => 'sent',
             'sender_id' => $master->id
         ]);
 
-        // 4. Pesquisa SEM CONVITE NENHUM (Não deve aparecer)
+        // 5. Pesquisa SEM CONVITE NENHUM (Não deve aparecer)
         Search::create(['title' => 'Global Sem Convite', 'status' => 'published', 'questions' => $this->dummyQuestions, 'author_id' => $master->id]);
 
         $response = $this->actingAs($doctor, 'sanctum')->getJson('/api/my-searches/pending');
 
-        $response->assertStatus(200)->assertJsonCount(2, 'data'); // Apenas s1 e s3
+        $response->assertStatus(200)
+            ->assertJsonCount(2, 'data') // Apenas s1 e s3 (apenas convites 'accepted' e não finalizados)
+            ->assertJsonFragment(['title' => 'Pesquisa Convidada 1'])
+            ->assertJsonFragment(['title' => 'Global Solicitada'])
+            ->assertJsonMissing(['title' => 'Pesquisa Pendente de Aceite'])
+            ->assertJsonMissing(['title' => 'Global Sem Convite']);
     }
 
     /**
